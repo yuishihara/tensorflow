@@ -124,6 +124,19 @@ def _ApplyRMSPropShape(op):
   grad_shape = op.inputs[7].get_shape().merge_with(mom_shape)
   return [grad_shape]
 
+@ops.RegisterShape("ApplyRMSPropGraves")
+def _ApplyRMSPropGravesShape(op):
+  """Shape function for the ApplyRMSPropGraves op."""
+  var_shape = op.inputs[0].get_shape()
+  n_shape = op.inputs[1].get_shape().merge_with(var_shape)
+  g_shape = op.inputs[2].get_shape().merge_with(n_shape)
+  mom_shape = op.inputs[3].get_shape().merge_with(g_shape)
+  _AssertInputIsScalar(op, 4)  # lr
+  _AssertInputIsScalar(op, 5)  # rho
+  _AssertInputIsScalar(op, 6)  # momentum
+  _AssertInputIsScalar(op, 7)  # epsilon
+  grad_shape = op.inputs[8].get_shape().merge_with(mom_shape)
+  return [grad_shape]
 
 @ops.RegisterShape("ApplyGradientDescent")
 def _ApplyGradientDescentShape(op):

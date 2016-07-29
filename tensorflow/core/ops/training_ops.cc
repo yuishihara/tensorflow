@@ -349,4 +349,43 @@ use_locking: If `True`, updating of the var, m, and v tensors will be protected
   contention.
 )doc");
 
+REGISTER_OP("ApplyRMSPropGraves")
+    .Input("var: Ref(T)")
+    .Input("n: Ref(T)")
+    .Input("g: Ref(T)")
+    .Input("mom: Ref(T)")
+    .Input("lr: T")
+    .Input("rho: T")
+    .Input("momentum: T")
+    .Input("epsilon: T")
+    .Input("grad: T")
+    .Output("out: Ref(T)")
+    .Attr("T: numbertype")
+    .Attr("use_locking: bool = false")
+    .Doc(R"doc(
+Update '*var' according to the RMSPropGraves algorithm.
+
+n = decay * n + (1-decay) * gradient ** 2
+g = decay * g + (1-decay) * gradient
+Delta = learning_rate * gradient / sqrt(n - g**2 + epsilon)
+
+n <- rho * n_{t-1} + (1-rho) * grad * grad
+g <- rho * g_{t-1} + (1-rho) * grad
+mom <- momentum * mom_{t-1} + lr * grad / sqrt(n - g**2 + epsilon)
+var <- var - mom
+
+var: Should be from a Variable().
+n: Should be from a Variable().
+g: Should be from a Variable().
+mom: Should be from a Variable().
+lr: Scaling factor. Must be a scalar.
+epsilon: Ridge term. Must be a scalar.
+rho: Decay rate. Must be a scalar.
+grad: The gradient.
+out: Same as "var".
+use_locking: If `True`, updating of the var, m, and v tensors will be protected
+  by a lock; otherwise the behavior is undefined, but may exhibit less
+  contention.
+)doc");
+
 }  // namespace tensorflow

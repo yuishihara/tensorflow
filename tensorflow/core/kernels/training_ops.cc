@@ -148,6 +148,24 @@ struct ApplyRMSProp<CPUDevice, T> {
   }
 };
 
+template <typename T>
+struct ApplyRMSPropGraves<CPUDevice, T> {
+  void operator()(const CPUDevice& d, typename TTypes<T>::Flat var,
+                  typename TTypes<T>::Flat n, typename TTypes<T>::Flat g,
+                  typename TTypes<T>::Flat mom,
+                  typename TTypes<T>::ConstScalar lr,
+                  typename TTypes<T>::ConstScalar rho,
+                  typename TTypes<T>::ConstScalar momentum,
+                  typename TTypes<T>::ConstScalar epsilon,
+                  typename TTypes<T>::ConstFlat grad) {
+    n.device(d) += (grad.square() - n) * (static_cast<T>(1) - rho());
+    g.device(d) += (grad - g) * (static_cast<T>(1) - rho());
+    mom.device(d) =
+        mom * momentum() - (grad * lr()) / ((n - g.square() + epsilon()).sqrt());
+    var.device(d) += mom;
+  }
+};
+
 }  // namespace functor
 
 // MaybeLockMutexesInOrder is a helper function to acquire mutexes in address
@@ -1438,6 +1456,131 @@ namespace functor {
       typename TTypes<T>::ConstScalar epsilon,                                 \
       typename TTypes<T>::ConstFlat grad);                                     \
   extern template struct ApplyRMSProp<GPUDevice, T>;
+DECLARE_GPU_SPEC(Eigen::half);
+DECLARE_GPU_SPEC(float);
+DECLARE_GPU_SPEC(double);
+#undef DECLARE_GPU_SPEC
+}  // namespace functor
+
+REGISTER_KERNELS(GPU, Eigen::half);
+REGISTER_KERNELS(GPU, float);
+REGISTER_KERNELS(GPU, double);
+#endif
+#undef REGISTER_CPU_KERNELS
+#undef REGISTER_KERNELS
+
+template <typename Device, typename T>
+class ApplyRMSPropGravesOp : public OpKernel {
+ public:
+  explicit ApplyRMSPropGravesOp(OpKernelConstruction* ctx) : OpKernel(ctx) {
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("use_locking", &use_exclusive_lock_));
+  }
+
+  void Compute(OpKernelContext* ctx) override {
+    auto locks = MaybeLockMutexesInOrder(ctx, use_exclusive_lock_, {0, 1, 2, 3});
+
+    Tensor var = ctx->mutable_input(0, use_exclusive_lock_);
+    Tensor n = ctx->mutable_input(1, use_exclusive_lock_);
+    Tensor g = ctx->mutable_input(2, use_exclusive_lock_);
+    Tensor mom = ctx->mutable_input(3, use_exclusive_lock_);
+
+    OP_REQUIRES(
+        ctx, var.IsInitialized(),
+        errors::FailedPrecondition(
+            "Attempting to use uninitialized variables: ", def().input(0)));
+    OP_REQUIRES(
+        ctx, n.IsInitialized(),
+        errors::FailedPrecondition(
+            "Attempting to use uninitialized variables: ", def().input(1)));
+    OP_REQUIRES(
+        ctx, g.IsInitialized(),
+        errors::FailedPrecondition(
+            "Attempting to use uninitialized variables: ", def().input(2)));
+    OP_REQUIRES(
+        ctx, mom.IsInitialized(),
+        errors::FailedPrecondition(
+            "Attempting to use uninitialized variables: ", def().input(3)));
+
+    const Tensor& lr = ctx->input(4);
+    const Tensor& rho = ctx->input(5);
+    const Tensor& momentum = ctx->input(6);
+    const Tensor& epsilon = ctx->input(7);
+    const Tensor& grad = ctx->input(8);
+
+    OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(lr.shape()),
+                errors::InvalidArgument("lr is not a scalar: ",
+                                        lr.shape().DebugString()));
+    OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(rho.shape()),
+                errors::InvalidArgument("rho is not a scalar: ",
+                                        rho.shape().DebugString()));
+    OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(momentum.shape()),
+                errors::InvalidArgument("momentum is not a scalar: ",
+                                        momentum.shape().DebugString()));
+    OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(epsilon.shape()),
+                errors::InvalidArgument("epsilon is not a scalar: ",
+                                        epsilon.shape().DebugString()));
+
+    OP_REQUIRES(ctx, var.shape().IsSameSize(n.shape()),
+                errors::InvalidArgument("var and n do not have the same shape",
+                                        var.shape().DebugString(), " ",
+                                        n.shape().DebugString()));
+
+    OP_REQUIRES(ctx, var.shape().IsSameSize(g.shape()),
+                errors::InvalidArgument("var and g do not have the same shape",
+                                        var.shape().DebugString(), " ",
+                                        g.shape().DebugString()));
+
+    OP_REQUIRES(ctx, var.shape().IsSameSize(mom.shape()),
+                errors::InvalidArgument(
+                    "var and mom do not have the same shape",
+                    var.shape().DebugString(), " ", mom.shape().DebugString()));
+
+    OP_REQUIRES(
+        ctx, var.shape().IsSameSize(grad.shape()),
+        errors::InvalidArgument("var and grad do not have the same shape",
+                                var.shape().DebugString(), " ",
+                                grad.shape().DebugString()));
+
+    const Device& device = ctx->template eigen_device<Device>();
+    functor::ApplyRMSPropGraves<Device, T>()(device, var.flat<T>(), n.flat<T>(), g.flat<T>(),
+                                             mom.flat<T>(), lr.scalar<T>(),
+                                             rho.scalar<T>(), momentum.scalar<T>(),
+                                             epsilon.scalar<T>(), grad.flat<T>());
+
+    ctx->forward_ref_input_to_ref_output(0, 0);
+  }
+
+ private:
+  bool use_exclusive_lock_;
+};
+
+typedef Eigen::ThreadPoolDevice CPUDevice;
+typedef Eigen::GpuDevice GPUDevice;
+
+#define REGISTER_KERNELS(D, T)                                        \
+  REGISTER_KERNEL_BUILDER(                                            \
+      Name("ApplyRMSPropGraves").Device(DEVICE_##D).TypeConstraint<T>("T"), \
+      ApplyRMSPropGravesOp<D##Device, T>);
+#define REGISTER_CPU_KERNELS(T) REGISTER_KERNELS(CPU, T);
+
+TF_CALL_half(REGISTER_CPU_KERNELS);
+TF_CALL_float(REGISTER_CPU_KERNELS);
+TF_CALL_double(REGISTER_CPU_KERNELS);
+
+#if GOOGLE_CUDA
+// Forward declarations of the functor specializations for GPU.
+namespace functor {
+#define DECLARE_GPU_SPEC(T)                                                    \
+  template <>                                                                  \
+  void ApplyRMSPropGraves<GPUDevice, T>::operator()(                           \
+      const GPUDevice& d, typename TTypes<T>::Flat var,                        \
+      typename TTypes<T>::Flat n, typename TTypes<T>::Flat g,                  \
+      typename TTypes<T>::Flat mom,                                            \
+      typename TTypes<T>::ConstScalar lr, typename TTypes<T>::ConstScalar rho, \
+      typename TTypes<T>::ConstScalar momentum,                                \
+      typename TTypes<T>::ConstScalar epsilon,                                 \
+      typename TTypes<T>::ConstFlat grad);                                     \
+  extern template struct ApplyRMSPropGraves<GPUDevice, T>;
 DECLARE_GPU_SPEC(Eigen::half);
 DECLARE_GPU_SPEC(float);
 DECLARE_GPU_SPEC(double);

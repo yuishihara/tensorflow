@@ -40,6 +40,7 @@ OPTIMIZER_CLS_NAMES = {
     "Ftrl": train.FtrlOptimizer,
     "Momentum": train.MomentumOptimizer,
     "RMSProp": train.RMSPropOptimizer,
+    "RMSPropGraves": train.RMSPropGravesOptimizer,
     "SGD": train.GradientDescentOptimizer,
 }
 
